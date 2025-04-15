@@ -123,7 +123,6 @@ This extension uses:
 
 ## Credits
 
-- Extension developed by [Your Name]
 - Significant improvements and code enhancements by [Claude AI](https://claude.ai)
 - Kokoro TTS model and server by [remsky](https://github.com/remsky)
 

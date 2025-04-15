@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Kokoro TTS Reader</title>
+  <style>
+    body {
+      width: 320px;
+      padding: 15px;
+      font-family: Arial, sans-serif;
+      background-color: #f5f7fa;
+      color: #333;
+      margin: 0;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    label {
+      font-weight: bold;
+      color: #444;
+    }
+    input, select, textarea {
+      padding: 8px 12px;
+      border: 1px solid #dde1e7;
+      border-radius: 6px;
+      background-color: #fff;
+      box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+      transition: all 0.2s ease;
+    }
+    input:focus, select:focus, textarea:focus {
+      border-color: #4285f4;
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(66, 133, 244, 0.2);
+    }
+    button {
+      padding: 10px 14px;
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: 5px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+    button:hover {
+      background-color: #3367d6;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .buttons {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    #stop-btn {
+      background-color: #ea4335;
+    }
+    #stop-btn:hover {
+      background-color: #d33828;
+    }
+    #test-connection {
+      background-color: #34a853;
+      margin-top: 10px;
+    }
+    #test-connection:hover {
+      background-color: #2e8d46;
+    }
+    #server-status {
+      margin-top: 15px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      background-color: #f5f5f5;
+      font-weight: normal;
+      border-left: 4px solid #ccc;
+    }
+    textarea {
+      width: 100%;
+      resize: vertical;
+      min-height: 80px;
+      font-family: inherit;
+      padding: 8px 12px;
+      border: 1px solid #dde1e7;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      line-height: 1.5;
+    }
+    #play-btn {
+      background-color: #34a853;
+      flex: 1;
+    }
+    #play-btn:hover {
+      background-color: #2e8d46;
+    }
+    .error-message {
+      color: #ea4335;
+      margin-top: 10px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      background-color: #fde9e8;
+      display: none;
+      border-left: 4px solid #ea4335;
+    }
+    .status {
+      font-style: italic;
+      margin-top: 10px;
+      color: #666;
+    }
+    .tab-buttons {
+      display: flex;
+      margin-bottom: 15px;
+      border-radius: 6px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      border: 1px solid #dde1e7;
+    }
+    .tab-button {
+      flex: 1;
+      padding: 10px 8px;
+      text-align: center;
+      background-color: #f8f9fa;
+      cursor: pointer;
+      border: none;
+      font-weight: 500;
+      color: #555;
+      transition: all 0.2s ease;
+    }
+    .tab-button:hover {
+      background-color: #f1f3f4;
+    }
+    .tab-button.active {
+      background-color: #4285f4;
+      color: white;
+    }
+    .tab-content {
+      display: none;
+      background-color: #fff;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    }
+    .tab-content.active {
+      display: block;
+    }
+    h2 {
+      margin-top: 0;
+      margin-bottom: 15px;
+      color: #4285f4;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .success-message {
+      background-color: #e6f4ea;
+      color: #137333;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin-top: 10px;
+      display: none;
+      border-left: 4px solid #34a853;
+    }
+    .progress-container {
+      width: 100%;
+      height: 12px;
+      background-color: #f1f1f1;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 10px;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #4285f4, #34a853);
+      width: 0%;
+      border-radius: 6px;
+      transition: width 0.3s ease;
+    }
+    .player-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+      padding: 10px;
+      background-color: #f8f9fa;
+      border-radius: 6px;
+      border: 1px solid #dde1e7;
+    }
+    .player-status.playing {
+      border-left: 4px solid #34a853;
+    }
+    .player-status.stopped {
+      border-left: 4px solid #ea4335;
+    }
+    .player-status.processing {
+      border-left: 4px solid #4285f4;
+    }
+    .status-text {
+      font-weight: 500;
+      color: #444;
+    }
+    .status-badge {
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 20px;
+      font-weight: bold;
+    }
+    .status-badge.playing {
+      background-color: #e6f4ea;
+      color: #137333;
+    }
+    .status-badge.stopped {
+      background-color: #fde9e8;
+      color: #c5221f;
+    }
+    .status-badge.processing {
+      background-color: #e8f0fe;
+      color: #1a73e8;
+    }
+    .background-notice {
+      background-color: #e8f0fe;
+      color: #1a73e8;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin-top: 10px;
+      border-left: 4px solid #1a73e8;
+      font-size: 12px;
+    }
+    .word-counter {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 5px;
+      font-size: 12px;
+      color: #666;
+    }
+    .word-counter.warning {
+      color: #e67700;
+    }
+    .word-counter.danger {
+      color: #c5221f;
+    }
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(66, 133, 244, 0.2);
+      border-top-color: #4285f4;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin {
+      to {transform: rotate(360deg);}
+    }
+    .processing-indicator {
+      display: none;
+      align-items: center;
+      padding: 8px;
+      margin-top: 10px;
+      background-color: #e8f0fe;
+      border-radius: 6px;
+      font-size: 13px;
+      color: #1a73e8;
+    }
+    .performance-tips {
+      background-color: #fff8e1;
+      color: #b06000;
+      padding: 10px;
+      border-radius: 6px;
+      margin-top: 10px;
+      font-size: 12px;
+      border-left: 4px solid #fbbc05;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h2>Kokoro TTS Reader</h2>
+  
+  <div class="tab-buttons">
+    <button class="tab-button active" data-tab="controls">Controls</button>
+    <button class="tab-button" data-tab="settings">Settings</button>
+  </div>
+
+  <div id="controls" class="tab-content active">
+    <div class="container">
+      <div class="status" id="status-message">Select text on a webpage and click "Play" to read it aloud.</div>
+      
+      <div class="form-group">
+        <label for="selected-text">Selected Text:</label>
+        <textarea id="selected-text" rows="4" placeholder="Text will appear here when selected on webpage..."></textarea>
+        <div class="word-counter" id="word-counter">
+          <span>0 words (0 characters)</span>
+          <span id="word-limit">Recommended: Up to 300 words</span>
+        </div>
+      </div>
+      
+      <div class="processing-indicator" id="processing-indicator">
+        <div class="spinner"></div>
+        <span id="processing-text">Processing your request...</span>
+      </div>
+      
+      <div class="performance-tips" id="performance-tips">
+        <strong>Performance tip:</strong> Text over 2000 words may cause performance issues. Consider splitting into smaller sections for better results.
+      </div>
+      
+      <div class="player-status" id="player-status">
+        <span class="status-text">No active playback</span>
+        <span class="status-badge stopped">Stopped</span>
+      </div>
+      
+      <div class="progress-container">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      
+      <div class="buttons">
+        <button id="play-btn">Play</button>
+        <button id="stop-btn">Stop</button>
+      </div>
+      
+      <div class="background-notice">
+        Audio plays in the background - you can close this popup and continue browsing.
+      </div>
+      
+      <div id="error-message" class="error-message"></div>
+    </div>
+  </div>
+
+  <div id="settings" class="tab-content">
+    <div class="container">
+      <div class="form-group">
+        <label for="api-url">Kokoro API URL:</label>
+        <input type="text" id="api-url" placeholder="http://localhost:8880">
+      </div>
+      
+      <div class="form-group">
+        <label for="api-key">API Key (if needed):</label>
+        <input type="text" id="api-key" placeholder="not-needed">
+      </div>
+      
+      <div class="form-group">
+        <label for="voice">Voice:</label>
+        <input type="text" id="voice" placeholder="af_bella">
+      </div>
+      
+      <div class="form-group">
+        <label for="chunk-size">Chunk Size (characters):</label>
+        <select id="chunk-size">
+          <option value="500">500 (Low-end systems)</option>
+          <option value="1000" selected>1000 (Recommended)</option>
+          <option value="1500">1500 (Higher-end systems)</option>
+        </select>
+      </div>
+      
+      <button id="save-settings">Save Settings</button>
+      <div id="settings-status" class="status"></div>
+      <div id="save-success" class="success-message">Settings saved successfully!</div>
+    </div>
+    
+    <div id="server-status" class="status">Checking server connection...</div>
+    <button id="test-connection">Test Connection</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

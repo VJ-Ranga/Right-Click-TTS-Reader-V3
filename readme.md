@@ -2,7 +2,7 @@
 
 A Chrome extension for text-to-speech using the Kokoro TTS API, allowing you to listen to any selected text on webpages with background audio playback.
 
-![Kokoro TTS Reader](https://via.placeholder.com/800x400?text=Kokoro+TTS+Reader)
+![Kokoro TTS Reader](koko-tts.png)
 
 ## Overview
 

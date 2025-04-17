@@ -332,7 +332,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     chrome.runtime.sendMessage({ action: 'checkServer' }, function(response) {
       if (response && response.connected) {
-        serverStatus.textContent = 'Server connection: Success ✓';
+        serverStatus.textContent = 'Server connection: Success \u2713';
         serverStatus.style.color = '#34a853';
         serverStatus.style.borderLeftColor = '#34a853';
       } else {

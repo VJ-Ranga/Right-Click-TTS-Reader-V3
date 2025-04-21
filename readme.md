@@ -1,14 +1,24 @@
 # Kokoro TTS Reader - Chrome Extension
 
-A Chrome extension for text-to-speech using the Kokoro TTS API, allowing you to listen to any selected text on webpages with background audio playback.
+A Chrome extension for text-to-speech using the Kokoro TTS API, allowing you to listen to selected text from any webpage with background audio playback.
 
 ![Kokoro TTS Reader](koko-tts.png)
+
+## 🔥 Important Notice
+
+**This extension is designed for local network use only:**
+- Requires a Kokoro TTS server running on your localhost or local network
+- Not intended for use with remote/public TTS servers
+- No data is sent to external services beyond your local Kokoro server
+
+**Server Performance Requirements:**
+- **GPU-accelerated server** is strongly recommended for smooth performance
+- CPU-only servers will experience significant delays with longer texts
+- Lower-powered servers may struggle with texts over 500 words
 
 ## Overview
 
 Kokoro TTS Reader is a Chrome extension that converts selected text from any webpage into speech using the Kokoro TTS API. Unlike typical TTS extensions, this one uses Chrome's Offscreen API to play audio in the background - meaning you can close the popup and continue browsing while listening.
-
-**Note**: This is a fun experimental project that may contain bugs. Feel free to contribute fixes or report issues!
 
 ## Features
 
@@ -36,16 +46,14 @@ This extension uses Chrome's Offscreen Document API (introduced in Chrome 116) t
    - **Content Script**: Captures selected text from webpages
    - **Popup UI**: Provides controls and displays status
 
-3. Advanced features include:
-   - Chunk-based processing for handling long texts
-   - Audio preloading for smooth playback between chunks
-   - Automatic cleanup to prevent resource leaks
-   - Web Audio API for reliable audio handling
-
 ## Requirements
 
 - Chrome browser (version 116+) - required for offscreen document API
-- Kokoro TTS server (running on your local machine or accessible network)
+- Kokoro TTS server running on your localhost or local network
+- Server hardware recommendations:
+  - **Minimum**: Dual-core CPU, 4GB RAM
+  - **Recommended**: Quad-core CPU, 8GB RAM, NVIDIA GPU (at least 4GB VRAM)
+  - **Optimal**: 8-core CPU, 16GB RAM, NVIDIA GPU with 8GB+ VRAM
 
 ## Installation
 
@@ -83,12 +91,27 @@ This extension uses Chrome's Offscreen Document API (introduced in Chrome 116) t
 4. Click "Save Settings" to apply your changes
 5. Use "Test Connection" to verify the server connection
 
-## Performance Tips
+## Performance Guidelines
 
-- For optimal performance, keep text selections under 2000 words
-- Very long texts (5000+ words) may cause performance issues on low-end systems
-- If you encounter issues with very long texts, consider splitting them into smaller sections
-- Larger chunk sizes (1500) work well on higher-end systems but may cause delays on lower-end systems
+### Server Capability
+| Server Type | Max Recommended Text Length | Expected Performance |
+|-------------|----------------------------|---------------------|
+| CPU-only (laptop) | 300 words | Slow, high latency |
+| CPU-only (desktop) | 500 words | Moderate latency |
+| GPU-accelerated (consumer) | 2000 words | Good performance |
+| GPU-accelerated (high-end) | 5000+ words | Excellent performance |
+
+### Chunk Size Settings
+- **200 characters**: Use for CPU-only laptops
+- **500 characters**: Use for low-end systems or CPU-only servers
+- **1000 characters**: Balanced option for most setups (default)
+- **1500 characters**: Best for powerful systems with GPU acceleration
+
+### Best Practices
+- For optimal performance, keep text selections under the recommended limits for your hardware
+- Consider splitting very long texts into smaller sections
+- Close other resource-intensive applications when using CPU-only servers
+- Expect higher latency for the first chunk as the TTS model loads
 
 ## Troubleshooting
 
@@ -106,11 +129,27 @@ This extension uses Chrome's Offscreen Document API (introduced in Chrome 116) t
 - The extension requires Chrome 116 or newer due to use of the Offscreen Document API
 - If you receive a browser compatibility message, update your Chrome to the latest version
 
+### Server Performance Issues
+- If playback is extremely slow, reduce your chunk size setting
+- Consider upgrading your server hardware or using GPU acceleration
+- For CPU-only servers, reduce the length of text being processed
+
 ## Known Limitations
 
-- Maximum recommended text length is ~10,000 words for optimal performance
+- Maximum recommended text length varies based on server capability (see Performance Guidelines)
 - Only one audio playback instance can be active at a time
 - Some websites with strict Content Security Policy may block content script
+- Performance heavily depends on your local Kokoro TTS server's capabilities
+
+## Setting Up a Kokoro TTS Server
+
+This extension requires a working Kokoro TTS server. For information on setting up your own Kokoro TTS server, please refer to the [Kokoro TTS GitHub repository](https://github.com/kokoro).
+
+Basic server setup steps:
+1. Install the required dependencies for Kokoro TTS
+2. Download the Kokoro TTS model files
+3. Start the Kokoro TTS server on your local machine or network
+4. Configure the extension to point to your server URL
 
 ## Technical Details
 
@@ -123,16 +162,9 @@ This extension uses:
 
 ## Credits
 
+- Extension developed by [Your Name]
 - Significant improvements and code enhancements by [Claude AI](https://claude.ai)
 - Kokoro TTS model and server by [remsky](https://github.com/remsky)
-
-## Future Plans
-
-- Volume control
-- Speed adjustment
-- More voice options
-- Better text processing for languages other than English
-- Support for additional TTS engines
 
 ## License
 
@@ -140,4 +172,4 @@ This extension uses:
 
 ---
 
-*This extension is not affiliated with Kokoro TTS. It is designed to work with any Kokoro TTS server.*
+*This extension is not affiliated with Kokoro TTS. It is designed to work with any Kokoro TTS server running on your local machine or network.*

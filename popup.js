@@ -36,6 +36,10 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
           // Hide processing indicator if failed
           hideProcessingIndicator();
+          // If there's an error message, show it
+          if (response && response.error) {
+            showError(response.error);
+          }
         }
       });
     } else {
@@ -49,6 +53,11 @@ document.addEventListener('DOMContentLoaded', function() {
     chrome.runtime.sendMessage({ action: 'stopPlayback' }, function(response) {
       // Status will be updated via message listener
       hideProcessingIndicator();
+      
+      // Handle any error response
+      if (response && !response.success && response.error) {
+        showError(response.error);
+      }
     });
   });
 
@@ -73,7 +82,8 @@ document.addEventListener('DOMContentLoaded', function() {
     apiUrl: 'http://localhost:8880',
     apiKey: 'not-needed',
     voice: 'af_bella',
-    chunkSize: '1000'
+    chunkSize: '1000',
+    maxCacheSize: '10' // Added setting for maximum cache size
   }, function(items) {
     document.getElementById('api-url').value = items.apiUrl;
     document.getElementById('api-key').value = items.apiKey;
@@ -92,7 +102,8 @@ document.addEventListener('DOMContentLoaded', function() {
       apiUrl: apiUrl,
       apiKey: apiKey,
       voice: voice,
-      chunkSize: chunkSize
+      chunkSize: chunkSize,
+      maxCacheSize: '10' // Set a default max cache size
     }, function() {
       const successElement = document.getElementById('save-success');
       successElement.style.display = 'block';
@@ -123,7 +134,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Update playback controls based on current status
     if (response) {
-      updatePlaybackControls(response.isPlaying, response.currentChunk, response.totalChunks, response.isProcessing);
+      updatePlaybackControls(response.isPlaying, response.currentChunk, response.totalChunks, response.isProcessing, response.processingMessage);
     }
   });
 
@@ -138,7 +149,7 @@ document.addEventListener('DOMContentLoaded', function() {
       }
       
       // Update playback controls based on status update
-      updatePlaybackControls(message.isPlaying, message.currentChunk, message.totalChunks, message.isProcessing);
+      updatePlaybackControls(message.isPlaying, message.currentChunk, message.totalChunks, message.isProcessing, message.processingMessage);
       
       // Show error if there is one
       if (message.lastError) {
@@ -216,7 +227,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Function to update playback controls
-  function updatePlaybackControls(isPlaying, currentChunk, totalChunks, isProcessing) {
+  function updatePlaybackControls(isPlaying, currentChunk, totalChunks, isProcessing, processingMessage) {
     const playBtn = document.getElementById('play-btn');
     const stopBtn = document.getElementById('stop-btn');
     const statusMessage = document.getElementById('status-message');
@@ -242,7 +253,7 @@ document.addEventListener('DOMContentLoaded', function() {
       // Processing
       playerStatus.classList.add('processing');
       statusBadge.classList.add('processing');
-      statusText.textContent = 'Processing request';
+      statusText.textContent = processingMessage || 'Processing request';
       statusBadge.textContent = 'Processing';
       progressBar.style.width = '0%';
       
@@ -265,10 +276,10 @@ document.addEventListener('DOMContentLoaded', function() {
       statusMessage.textContent = `Text is being read aloud in the background.`;
     } else {
       // Stopped
-      playerStatus.classList.add('stopped');
-      statusBadge.classList.add('stopped');
-      statusText.textContent = 'No active playback';
-      statusBadge.textContent = 'Stopped';
+      playerStatus.classList.add('idle');
+      statusBadge.classList.add('idle');
+      statusText.textContent = 'Waiting for input...';
+      statusBadge.textContent = 'idle';
       progressBar.style.width = '0%';
       
       // Update status message
@@ -280,7 +291,7 @@ document.addEventListener('DOMContentLoaded', function() {
   function updatePlaybackStatus() {
     chrome.runtime.sendMessage({ action: 'getStatus' }, function(response) {
       if (response) {
-        updatePlaybackControls(response.isPlaying, response.currentChunk, response.totalChunks, response.isProcessing);
+        updatePlaybackControls(response.isPlaying, response.currentChunk, response.totalChunks, response.isProcessing, response.processingMessage);
       }
     });
   }
@@ -309,16 +320,22 @@ document.addEventListener('DOMContentLoaded', function() {
     // Also try to get the current selection from active tab
     chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
       if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: 'getSelectedText' }, function(response) {
-          if (chrome.runtime.lastError) {
-            // Content script might not be loaded on this page, ignore error
-            return;
-          }
-          if (response && response.text) {
-            document.getElementById('selected-text').value = response.text;
-            updateWordCount(response.text);
-          }
-        });
+        try {
+          chrome.tabs.sendMessage(tabs[0].id, { action: 'getSelectedText' }, function(response) {
+            if (chrome.runtime.lastError) {
+              // Content script might not be loaded on this page, ignore error
+              console.log("Could not get selection from tab: ", chrome.runtime.lastError.message);
+              return;
+            }
+            if (response && response.text) {
+              document.getElementById('selected-text').value = response.text;
+              updateWordCount(response.text);
+            }
+          });
+        } catch (e) {
+          console.log("Error getting selection from tab:", e);
+          // Continue without the selection - not critical
+        }
       }
     });
   }
@@ -331,6 +348,14 @@ document.addEventListener('DOMContentLoaded', function() {
     serverStatus.style.borderLeftColor = '#ccc';
     
     chrome.runtime.sendMessage({ action: 'checkServer' }, function(response) {
+      if (chrome.runtime.lastError) {
+        console.log("Error testing connection:", chrome.runtime.lastError.message);
+        serverStatus.textContent = 'Could not check server connection';
+        serverStatus.style.color = '#ea4335';
+        serverStatus.style.borderLeftColor = '#ea4335';
+        return;
+      }
+      
       if (response && response.connected) {
         serverStatus.textContent = 'Server connection: Success \u2713';
         serverStatus.style.color = '#34a853';

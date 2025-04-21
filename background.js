@@ -13,7 +13,9 @@ let ttsState = {
   offscreenDocumentReady: false,
   keepAliveInterval: null, // Keep alive interval reference
   documentCreationInProgress: false, // Flag to track document creation
-  closeDocumentOnStop: true // Flag to control document closure on stop
+  closeDocumentOnStop: true, // Flag to control document closure on stop
+  // Added maximum size for cache
+  maxCacheSize: 10 // Maximum number of audio chunks to keep in cache
 };
 
 // Create context menu item
@@ -50,6 +52,21 @@ function sendMessageSafely(message, callback) {
   }
 }
 
+// Promise version of sendMessageSafely for better async handling
+function sendMessageAsync(message, timeout = 3000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      console.log("Message timeout");
+      resolve(null);
+    }, timeout);
+    
+    sendMessageSafely(message, (response) => {
+      clearTimeout(timer);
+      resolve(response);
+    });
+  });
+}
+
 // Message handler
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   try {
@@ -80,7 +97,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
           
         case 'error':
-          ttsState.lastError = message.message;
+          // More user-friendly error message
+          const userMessage = getUserFriendlyErrorMessage(message.message);
+          ttsState.lastError = userMessage;
+          
+          console.error("Original error:", message.message);
+          
           ttsState.isProcessing = false;
           ttsState.processingMessage = '';
           broadcastStatus();
@@ -149,7 +171,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
         
       case 'checkServer':
-        checkServerConnection((result) => {
+        checkServerConnection().then(result => {
           try {
             sendResponse(result);
           } catch (e) {
@@ -172,12 +194,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
         
       case 'stopPlayback':
-        // Stop playback - we'll handle this in a separate async function
+        // Stop playback with async handling
         handleStopPlayback().then(() => {
           sendResponse({success: true});
         }).catch(e => {
           console.error("Error in stop playback:", e);
-          sendResponse({success: false, error: e.message});
+          sendResponse({success: false, error: getUserFriendlyErrorMessage(e.message)});
         });
         return true; // Keep channel open for async response
                 
@@ -189,10 +211,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } catch (e) {
     console.error("Error processing message:", e);
     // Always send a response, even in case of errors
-    sendResponse({success: false, error: e.message});
+    sendResponse({success: false, error: getUserFriendlyErrorMessage(e.message)});
   }
   return true; // Keep the messaging channel open
 });
+
+// Convert technical errors to user-friendly messages
+function getUserFriendlyErrorMessage(technicalMessage) {
+  // Log the original message for debugging
+  console.log("Original error message:", technicalMessage);
+  
+  // Map common error messages to user-friendly versions
+  if (technicalMessage.includes("Failed to fetch") || technicalMessage.includes("NetworkError")) {
+    return "Could not connect to the TTS server. Please check your server settings and connection.";
+  }
+  
+  if (technicalMessage.includes("only a single offscreen document")) {
+    return "There was an issue with the audio playback. Please try again.";
+  }
+  
+  if (technicalMessage.includes("API request failed")) {
+    return "The TTS server reported an error. Please check your server settings.";
+  }
+  
+  if (technicalMessage.includes("no document to close") || 
+      technicalMessage.includes("Failed to create offscreen document")) {
+    return "Could not initialize audio playback. Please try again.";
+  }
+  
+  if (technicalMessage.includes("not available")) {
+    return "This feature requires Chrome 116 or newer. Please update your browser.";
+  }
+  
+  // For any other errors, provide a generic message
+  return "An error occurred. Please try again.";
+}
 
 // Handle stop playback with proper cleanup
 async function handleStopPlayback() {
@@ -201,7 +254,7 @@ async function handleStopPlayback() {
   ttsState.isProcessing = false;
   
   // First send stop message to offscreen document
-  sendMessageSafely({
+  await sendMessageAsync({
     target: 'offscreen',
     action: 'stopPlayback'
   });
@@ -265,7 +318,7 @@ async function startTtsPlayback(text) {
     startKeepAliveMonitoring();
   } catch (e) {
     console.error("Error in startTtsPlayback:", e);
-    ttsState.lastError = `Failed to start playback: ${e.message}`;
+    ttsState.lastError = getUserFriendlyErrorMessage(e.message);
     ttsState.isProcessing = false;
     broadcastStatus();
   }
@@ -278,7 +331,8 @@ function sendTextToOffscreen(text) {
     apiUrl: 'http://localhost:8880',
     apiKey: 'not-needed',
     voice: 'af_bella',
-    chunkSize: '1000'
+    chunkSize: '1000',
+    maxCacheSize: '10' // Added setting for maximum cache size
   }, function(settings) {
     // Send text and settings to the offscreen document
     sendMessageSafely({
@@ -289,7 +343,8 @@ function sendTextToOffscreen(text) {
         apiUrl: settings.apiUrl,
         apiKey: settings.apiKey,
         voice: settings.voice,
-        chunkSize: parseInt(settings.chunkSize)
+        chunkSize: parseInt(settings.chunkSize),
+        maxCacheSize: parseInt(settings.maxCacheSize || 10) // Pass max cache size
       }
     }, (response) => {
       if (!response) {
@@ -366,7 +421,12 @@ async function ensureOffscreenDocumentExists() {
           }
         }, 100);
       });
-      return;
+      
+      // After waiting, check if document is now available
+      if (ttsState.offscreenDocumentReady) {
+        console.log('Document is now ready after waiting');
+        return;
+      }
     }
     
     // Check if the offscreen API is available
@@ -374,58 +434,96 @@ async function ensureOffscreenDocumentExists() {
       throw new Error('Offscreen API not available in this browser version');
     }
     
-    // Always close any existing document first to ensure clean state
-    await safeCloseDocument();
-    
     // Set flag to indicate document creation is in progress
+    // Do this BEFORE any async operations to prevent race conditions
     ttsState.documentCreationInProgress = true;
     ttsState.offscreenDocumentReady = false;
     
-    // Create a new offscreen document
-    console.log('Creating offscreen document');
-    
+    // Check if we already have an offscreen document
+    let hasExistingDocument = false;
     try {
-      await chrome.offscreen.createDocument({
-        url: 'offscreen.html', 
-        reasons: ['AUDIO_PLAYBACK'],
-        justification: 'Playing TTS audio in the background'
-      });
-      
-      // Wait for the offscreen document to report ready
-      await waitForOffscreenReady();
-    } catch (error) {
-      // If error contains "only a single offscreen document may be created" 
-      if (error.message && error.message.includes("only a single")) {
-        console.log("Single document error detected, trying to close and recreate");
-        await safeCloseDocument();
+      const existingContexts = await chrome.offscreen.getContexts();
+      hasExistingDocument = existingContexts && existingContexts.length > 0;
+    } catch (e) {
+      console.log('Error checking for existing documents:', e);
+    }
+    
+    // If we have an existing document, close it first
+    if (hasExistingDocument) {
+      console.log('Existing document found, closing it first');
+      try {
+        await chrome.offscreen.closeDocument();
+        console.log('Successfully closed existing document');
         
-        // Wait a moment before trying again
+        // Add a delay after closing to avoid race conditions
         await new Promise(r => setTimeout(r, 500));
-        
-        // Try again to create the document
+      } catch (e) {
+        console.log('Error closing existing document:', e);
+        // Continue anyway - the document might have been closed already
+      }
+    }
+    
+    // Create a new offscreen document with retry logic
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (attempts < maxAttempts) {
+      try {
+        console.log(`Creating offscreen document (attempt ${attempts + 1}/${maxAttempts})`);
         await chrome.offscreen.createDocument({
           url: 'offscreen.html', 
           reasons: ['AUDIO_PLAYBACK'],
           justification: 'Playing TTS audio in the background'
         });
         
-        // Wait for the offscreen document to report ready
-        await waitForOffscreenReady();
-      } else {
-        throw error; // Other errors are re-thrown
+        // Wait for the offscreen document to report ready with a timeout
+        const isReady = await waitForOffscreenReady(8000);
+        
+        if (isReady) {
+          console.log('Offscreen document created and ready');
+          return;
+        } else {
+          console.log('Offscreen document failed to become ready, retrying...');
+          // Try to close the document before retrying
+          await safeCloseDocument();
+          await new Promise(r => setTimeout(r, 500));
+        }
+      } catch (error) {
+        console.log(`Error creating document (attempt ${attempts + 1}):`, error);
+        
+        // If error contains "only a single offscreen document may be created"
+        if (error.message && error.message.includes("only a single")) {
+          console.log("Single document error detected, trying to close and retry");
+          await safeCloseDocument();
+          await new Promise(r => setTimeout(r, 1000)); // Longer delay for retry
+        }
       }
+      
+      attempts++;
+      
+      // Wait before retrying
+      if (attempts < maxAttempts) {
+        await new Promise(r => setTimeout(r, 500 * attempts)); // Increasing backoff
+      }
+    }
+    
+    if (attempts >= maxAttempts) {
+      throw new Error(`Failed to create offscreen document after ${maxAttempts} attempts`);
     }
   } catch (error) {
     console.error('Error ensuring offscreen document exists:', error);
-    ttsState.lastError = `Failed to create offscreen document: ${error.message}`;
+    ttsState.lastError = getUserFriendlyErrorMessage(error.message);
     ttsState.documentCreationInProgress = false;
     broadcastStatus();
     
-    // Fallback for older browsers or if the API fails
+    // Fallback for older browsers
     if (error.message.includes('not available')) {
       ttsState.lastError = 'This feature requires Chrome 116 or newer. Please update your browser.';
       broadcastStatus();
     }
+  } finally {
+    // Always make sure to reset the creation flag
+    ttsState.documentCreationInProgress = false;
   }
 }
 
@@ -435,14 +533,20 @@ async function safeCloseDocument() {
     console.log('Attempting to close existing offscreen document');
     
     if (!chrome.offscreen) {
+      console.log('Offscreen API not available, skipping close');
       return; // Offscreen API not available
     }
     
     // First check if we have any offscreen documents
+    let hasDocument = false;
     try {
       const existingContexts = await chrome.offscreen.getContexts();
-      if (!existingContexts || existingContexts.length === 0) {
+      hasDocument = existingContexts && existingContexts.length > 0;
+      
+      if (!hasDocument) {
         console.log('No offscreen document to close');
+        // Reset document state
+        ttsState.offscreenDocumentReady = false;
         return; // No documents to close
       }
     } catch (e) {
@@ -450,23 +554,60 @@ async function safeCloseDocument() {
       // Continue anyway - we'll try to close
     }
     
-    // Now try to close the document
-    try {
-      await chrome.offscreen.closeDocument();
-      console.log('Successfully closed offscreen document');
-      
-      // Reset document state
-      ttsState.offscreenDocumentReady = false;
-    } catch (e) {
-      console.log('Error closing document:', e);
-      // Ignore error - this could happen if the document doesn't exist
+    // If we have a document, send a message to clean up resources before closing
+    if (hasDocument) {
+      try {
+        // Try to send a cleanup message
+        await new Promise((resolve) => {
+          sendMessageSafely({
+            target: 'offscreen',
+            action: 'cleanup'
+          }, () => {
+            // Resolve regardless of response to prevent hanging
+            resolve();
+          });
+          
+          // Set a timeout in case the message doesn't get through
+          setTimeout(resolve, 300);
+        });
+      } catch (e) {
+        console.log('Error sending cleanup message:', e);
+        // Continue with document closing
+      }
     }
     
-    // Wait a moment after closing
-    await new Promise(r => setTimeout(r, 300));
+    // Now try to close the document with a retry mechanism
+    let closed = false;
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (!closed && attempts < maxAttempts) {
+      try {
+        await chrome.offscreen.closeDocument();
+        console.log('Successfully closed offscreen document');
+        closed = true;
+        
+        // Reset document state
+        ttsState.offscreenDocumentReady = false;
+      } catch (e) {
+        attempts++;
+        console.log(`Error closing document (attempt ${attempts}/${maxAttempts}):`, e);
+        
+        // Wait before retrying
+        if (attempts < maxAttempts) {
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+    }
+    
+    // Wait a moment after closing to ensure Chrome has time to fully clean up
+    await new Promise(r => setTimeout(r, 500));
   } catch (e) {
     console.log('Error in safeCloseDocument:', e);
-    // Continue anyway
+    // Continue anyway - we've done our best to clean up
+  } finally {
+    // Ensure state is updated even if there was an error
+    ttsState.offscreenDocumentReady = false;
   }
 }
 
@@ -475,17 +616,15 @@ function waitForOffscreenReady(timeout = 5000) {
   return new Promise((resolve) => {
     // If already ready, resolve immediately
     if (ttsState.offscreenDocumentReady) {
-      ttsState.documentCreationInProgress = false;
-      resolve();
+      resolve(true);
       return;
     }
     
     // Set up a timeout
     const timer = setTimeout(() => {
       console.log('Timed out waiting for offscreen document ready');
-      ttsState.documentCreationInProgress = false;
       chrome.runtime.onMessage.removeListener(readyListener);
-      resolve(); // Resolve anyway after timeout
+      resolve(false); // Resolve with false to indicate timeout
     }, timeout);
     
     // Set up a listener for the ready message
@@ -495,8 +634,7 @@ function waitForOffscreenReady(timeout = 5000) {
         clearTimeout(timer);
         chrome.runtime.onMessage.removeListener(readyListener);
         ttsState.offscreenDocumentReady = true;
-        ttsState.documentCreationInProgress = false;
-        resolve();
+        resolve(true);
       }
     };
     
@@ -536,39 +674,51 @@ async function recreateOffscreenDocument() {
     // Try to create a new document
     console.log('Creating new offscreen document');
     
-    try {
-      await chrome.offscreen.createDocument({
-        url: 'offscreen.html', 
-        reasons: ['AUDIO_PLAYBACK'],
-        justification: 'Playing TTS audio in the background'
-      });
-    } catch (error) {
-      // If we get a "single document" error, try one more time after a delay
-      if (error.message && error.message.includes("only a single")) {
-        console.log("Single document error while recreating, retrying after longer delay");
-        
-        // Wait longer to make sure the previous document is fully closed
-        await new Promise(r => setTimeout(r, 1000));
-        await safeCloseDocument();
-        await new Promise(r => setTimeout(r, 500));
-        
-        // Try again
+    // Use retry logic for recreation
+    let attempts = 0;
+    const maxAttempts = 3;
+    let success = false;
+    
+    while (!success && attempts < maxAttempts) {
+      try {
         await chrome.offscreen.createDocument({
           url: 'offscreen.html', 
           reasons: ['AUDIO_PLAYBACK'],
           justification: 'Playing TTS audio in the background'
         });
-      } else {
-        throw error;
+        
+        // Wait for ready signal
+        const isReady = await waitForOffscreenReady(8000);
+        if (isReady) {
+          success = true;
+          break;
+        }
+      } catch (error) {
+        attempts++;
+        console.log(`Error in recreation attempt ${attempts}:`, error);
+        
+        // If we get a "single document" error, try closing again with longer delay
+        if (error.message && error.message.includes("only a single")) {
+          console.log("Single document error while recreating, retrying after longer delay");
+          await safeCloseDocument();
+          await new Promise(r => setTimeout(r, 1000 * attempts)); // Increasing delay
+        }
+      }
+      
+      // Wait before retrying
+      if (!success && attempts < maxAttempts) {
+        await new Promise(r => setTimeout(r, 500 * attempts)); // Increasing backoff
       }
     }
     
-    // Wait for it to be ready
-    await waitForOffscreenReady();
+    if (!success) {
+      throw new Error(`Failed to recreate offscreen document after ${maxAttempts} attempts`);
+    }
+    
     return true;
   } catch (error) {
     console.error('Error recreating offscreen document:', error);
-    ttsState.lastError = `Failed to recreate offscreen document: ${error.message}`;
+    ttsState.lastError = getUserFriendlyErrorMessage(error.message);
     ttsState.documentCreationInProgress = false;
     broadcastStatus();
     
@@ -579,6 +729,9 @@ async function recreateOffscreenDocument() {
     }
     
     return false;
+  } finally {
+    // Always ensure we reset this flag
+    ttsState.documentCreationInProgress = false;
   }
 }
 
@@ -626,37 +779,47 @@ function countWords(text) {
 }
 
 // Function to check server connection
-function checkServerConnection(callback) {
-  chrome.storage.local.get({
-    apiUrl: 'http://localhost:8880',
-    apiKey: 'not-needed'
-  }, function(settings) {
+async function checkServerConnection() {
+  try {
+    const settings = await new Promise(resolve => {
+      chrome.storage.local.get({
+        apiUrl: 'http://localhost:8880',
+        apiKey: 'not-needed'
+      }, resolve);
+    });
+    
     // Reset the error state
     ttsState.lastError = '';
     
     // Check if server is available by making a simple request to the voices endpoint
-    fetch(`${settings.apiUrl}/audio/voices`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${settings.apiKey}`
-      }
-    })
-    .then(response => {
+    try {
+      const response = await fetch(`${settings.apiUrl}/audio/voices`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${settings.apiKey}`
+        }
+      });
+      
       if (response.ok) {
         ttsState.serverConnected = true;
-        if (callback) callback({ connected: true, message: "Successfully connected to Kokoro TTS server" });
+        return { connected: true, message: "Successfully connected to Kokoro TTS server" };
       } else {
         ttsState.serverConnected = false;
-        const errorMsg = `Server responded with error: ${response.status}`;
+        const errorMsg = `Server connection failed with status code: ${response.status}`;
         ttsState.lastError = errorMsg;
-        if (callback) callback({ connected: false, message: errorMsg });
+        return { connected: false, message: errorMsg };
       }
-    })
-    .catch(error => {
+    } catch (error) {
       ttsState.serverConnected = false;
-      const errorMsg = `Failed to connect: ${error.message}`;
+      const errorMsg = `Cannot connect to server: ${getUserFriendlyErrorMessage(error.message)}`;
       ttsState.lastError = errorMsg;
-      if (callback) callback({ connected: false, message: errorMsg });
-    });
-  });
+      return { connected: false, message: errorMsg };
+    }
+  } catch (error) {
+    console.error("Error in checkServerConnection:", error);
+    return { 
+      connected: false, 
+      message: "Failed to check server connection. Please try again." 
+    };
+  }
 }

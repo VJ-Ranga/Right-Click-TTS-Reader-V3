@@ -7,6 +7,7 @@ const playerState = {
   isPlaying: false,
   currentAudio: null,
   audioCache: {},     // Cache for preloaded audio
+  audioCacheOrder: [], // Track order of cached items for LRU cache
   preloadingChunk: -1, // Currently preloading chunk index
   keepAliveInterval: null, // Keep alive timer
   audioContext: null,  // Web Audio API context
@@ -16,7 +17,8 @@ const playerState = {
     apiKey: 'not-needed',
     voice: 'af_bella',
     chunkSize: 1000,  // Default to 1000 characters
-    preloadThreshold: 0.3  // Start loading next chunk when current is 30% complete
+    preloadThreshold: 0.3,  // Start loading next chunk when current is 30% complete
+    maxCacheSize: 10  // Maximum number of audio chunks to keep in cache
   }
 };
 
@@ -155,10 +157,56 @@ function handleMessages(message, sender, sendResponse) {
         totalChunks: playerState.totalChunks
       });
       break;
+      
+    case 'cleanup':
+      // Clean up resources before document is closed
+      performCleanup();
+      sendResponse({ success: true });
+      break;
   }
   
   sendResponse({ success: true });
   return true; // Keep messaging channel open
+}
+
+// Clean up resources
+function performCleanup() {
+  console.log('Performing cleanup');
+  
+  // Stop any playing audio
+  if (playerState.audioSource) {
+    try {
+      playerState.audioSource.stop();
+    } catch (e) {
+      console.error('Error stopping audio source during cleanup:', e);
+    }
+    playerState.audioSource = null;
+  }
+  
+  // Close audio context
+  if (playerState.audioContext) {
+    try {
+      if (playerState.audioContext.state !== 'closed') {
+        playerState.audioContext.close();
+      }
+    } catch (e) {
+      console.error('Error closing audio context during cleanup:', e);
+    }
+    playerState.audioContext = null;
+  }
+  
+  // Clear audio cache
+  playerState.audioCache = {};
+  playerState.audioCacheOrder = [];
+  
+  // Stop keep alive
+  stopKeepAlive();
+  
+  // Update state
+  playerState.isPlaying = false;
+  playerState.currentChunk = 0;
+  
+  console.log('Cleanup completed');
 }
 
 // Process text into chunks
@@ -279,7 +327,7 @@ function startPlayback() {
 }
 
 // Process a chunk of text
-function processChunk(index) {
+async function processChunk(index) {
   if (index >= playerState.chunks.length || !playerState.isPlaying) {
     return;
   }
@@ -293,6 +341,8 @@ function processChunk(index) {
   // Check if we already have this chunk cached
   if (playerState.audioCache[index]) {
     console.log(`Using cached audio for chunk ${index + 1}`);
+    // Move this chunk to the front of the cache order (most recently used)
+    updateCacheOrder(index);
     playAudioFromCache(index);
     return;
   }
@@ -313,22 +363,23 @@ function processChunk(index) {
   
   console.log(`Requesting audio for chunk ${index + 1}/${playerState.totalChunks}`);
   
-  // Make API request
-  fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${playerState.settings.apiKey}`
-    },
-    body: JSON.stringify(requestBody)
-  })
-  .then(response => {
+  try {
+    // Make API request
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${playerState.settings.apiKey}`
+      },
+      body: JSON.stringify(requestBody)
+    });
+    
     if (!response.ok) {
       throw new Error(`API request failed with status ${response.status}`);
     }
-    return response.arrayBuffer();
-  })
-  .then(buffer => {
+    
+    const buffer = await response.arrayBuffer();
+    
     if (buffer.byteLength === 0) {
       throw new Error("Received empty audio data from server");
     }
@@ -342,14 +393,14 @@ function processChunk(index) {
     const bufferCopy = buffer.slice(0);
     
     // Cache the audio data
-    playerState.audioCache[index] = bufferCopy;
+    cacheAudioBuffer(index, bufferCopy);
     
     // Play the audio if we're still supposed to be playing this chunk
     if (playerState.isPlaying && playerState.currentChunk === index) {
-      playAudioBuffer(bufferCopy, index);
+      await playAudioBuffer(bufferCopy, index);
     }
-  })
-  .catch(error => {
+  } catch (error) {
+    console.error(`Error fetching audio for chunk ${index + 1}:`, error);
     showError(`Error fetching audio: ${error.message}`);
     
     // Try to continue with next chunk despite error
@@ -362,11 +413,44 @@ function processChunk(index) {
       stopKeepAlive();
       updateBackgroundStatus();
     }
-  });
+  }
+}
+
+// Add audio buffer to cache with LRU mechanism
+function cacheAudioBuffer(index, buffer) {
+  // Update cache order first (add to front or move to front)
+  updateCacheOrder(index);
+  
+  // Add to cache
+  playerState.audioCache[index] = buffer;
+  
+  // Check if we need to evict older items
+  const maxSize = playerState.settings.maxCacheSize || 10;
+  
+  if (playerState.audioCacheOrder.length > maxSize) {
+    // Remove oldest items
+    while (playerState.audioCacheOrder.length > maxSize) {
+      const oldestIndex = playerState.audioCacheOrder.pop();
+      console.log(`Cache full, removing chunk ${oldestIndex + 1} from cache`);
+      delete playerState.audioCache[oldestIndex];
+    }
+  }
+}
+
+// Update cache order (LRU tracking)
+function updateCacheOrder(index) {
+  // Remove the index if it already exists in the order
+  const existingPos = playerState.audioCacheOrder.indexOf(index);
+  if (existingPos !== -1) {
+    playerState.audioCacheOrder.splice(existingPos, 1);
+  }
+  
+  // Add to the front (most recently used)
+  playerState.audioCacheOrder.unshift(index);
 }
 
 // Play audio from the buffer using Web Audio API
-function playAudioBuffer(buffer, index) {
+async function playAudioBuffer(buffer, index) {
   try {
     // Make sure we have an audio context
     initAudioContext();
@@ -375,71 +459,62 @@ function playAudioBuffer(buffer, index) {
     const bufferToUse = buffer.slice(0);
     
     // Decode the audio data
-    playerState.audioContext.decodeAudioData(bufferToUse, (audioBuffer) => {
-      if (!playerState.isPlaying || playerState.currentChunk !== index) {
-        console.log('Playback state changed while decoding, skipping play');
-        return;
-      }
+    const audioBuffer = await decodeAudioData(bufferToUse);
+    
+    // Check if still playing the same chunk
+    if (!playerState.isPlaying || playerState.currentChunk !== index) {
+      console.log('Playback state changed while decoding, skipping play');
+      return;
+    }
+    
+    // Create a new source node
+    const source = playerState.audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    
+    // Connect the source to the destination (speakers)
+    source.connect(playerState.audioContext.destination);
+    
+    // Store the source for stop
+    playerState.audioSource = source;
+    
+    // Set up ended event handler
+    source.onended = () => {
+      console.log(`Finished playing chunk ${index + 1}`);
       
-      // Create a new source node
-      const source = playerState.audioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      
-      // Connect the source to the destination (speakers)
-      source.connect(playerState.audioContext.destination);
-      
-      // Store the source for stop
-      playerState.audioSource = source;
-      
-      // Add event listeners
-      source.onended = function() {
-        console.log(`Finished playing chunk ${index + 1}`);
+      // Move to next chunk
+      if (index < playerState.totalChunks - 1 && playerState.isPlaying) {
+        // Send processing update if there are more chunks
+        sendProcessingUpdate(`Preparing next audio chunk (${index + 2} of ${playerState.totalChunks})...`);
         
-        // Move to next chunk
-        if (index < playerState.totalChunks - 1 && playerState.isPlaying) {
-          // Send processing update if there are more chunks
-          sendProcessingUpdate(`Preparing next audio chunk (${index + 2} of ${playerState.totalChunks})...`);
-          
-          // Preload next chunk if not already loaded
-          if (index + 2 < playerState.totalChunks && !playerState.audioCache[index + 2]) {
-            preloadNextChunk(index + 2);
-          }
-          
-          // Process next chunk
-          processChunk(index + 1);
-        } else if (index >= playerState.totalChunks - 1) {
-          // Last chunk finished
-          console.log('Playback complete');
-          playerState.isPlaying = false;
-          playerState.audioSource = null;
-          stopKeepAlive();
-          updateBackgroundStatus();
+        // Preload next chunk if not already loaded
+        if (index + 2 < playerState.totalChunks && !playerState.audioCache[index + 2]) {
+          preloadNextChunk(index + 2);
         }
-      };
-      
-      // Start the source
-      source.start(0);
-      console.log(`Started playing chunk ${index + 1}`);
-      
-      // Preload next chunk
-      if (index + 1 < playerState.totalChunks && !playerState.audioCache[index + 1]) {
-        preloadNextChunk(index + 1);
-      }
-      
-      updateBackgroundStatus();
-    }, (error) => {
-      showError(`Error decoding audio: ${error}`);
-      
-      // Try next chunk
-      if (index < playerState.totalChunks - 1) {
+        
+        // Process next chunk
         processChunk(index + 1);
-      } else {
+      } else if (index >= playerState.totalChunks - 1) {
+        // Last chunk finished
+        console.log('Playback complete');
         playerState.isPlaying = false;
+        playerState.audioSource = null;
         stopKeepAlive();
         updateBackgroundStatus();
       }
-    });
+    };
+    
+    // Start the source
+    source.start(0);
+    console.log(`Started playing chunk ${index + 1}`);
+    
+    // Preload next chunk
+    if (index + 1 < playerState.totalChunks && !playerState.audioCache[index + 1]) {
+      preloadNextChunk(index + 1);
+    }
+    
+    updateBackgroundStatus();
   } catch (error) {
+    console.error(`Error playing audio for chunk ${index + 1}:`, error);
     showError(`Error playing audio: ${error.message}`);
     
     // Try next chunk
@@ -451,6 +526,16 @@ function playAudioBuffer(buffer, index) {
       updateBackgroundStatus();
     }
   }
+}
+
+// Promisified version of decodeAudioData
+function decodeAudioData(buffer) {
+  return new Promise((resolve, reject) => {
+    playerState.audioContext.decodeAudioData(buffer, 
+      (audioBuffer) => resolve(audioBuffer), 
+      (error) => reject(error || new Error('Failed to decode audio data'))
+    );
+  });
 }
 
 // Play audio from cache
@@ -467,8 +552,11 @@ function playAudioFromCache(index) {
 }
 
 // Preload the next chunk
-function preloadNextChunk(index) {
-  if (index >= playerState.chunks.length || playerState.audioCache[index] || playerState.preloadingChunk === index) {
+async function preloadNextChunk(index) {
+  // Skip if already preloading, out of range, or already cached
+  if (index >= playerState.chunks.length || 
+      playerState.audioCache[index] || 
+      playerState.preloadingChunk === index) {
     return;
   }
   
@@ -488,22 +576,23 @@ function preloadNextChunk(index) {
     response_format: 'mp3'
   };
   
-  // Make API request
-  fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${playerState.settings.apiKey}`
-    },
-    body: JSON.stringify(requestBody)
-  })
-  .then(response => {
+  try {
+    // Make API request
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${playerState.settings.apiKey}`
+      },
+      body: JSON.stringify(requestBody)
+    });
+    
     if (!response.ok) {
       throw new Error(`API request failed with status ${response.status}`);
     }
-    return response.arrayBuffer();
-  })
-  .then(buffer => {
+    
+    const buffer = await response.arrayBuffer();
+    
     if (buffer.byteLength === 0) {
       throw new Error("Received empty audio data from server");
     }
@@ -512,15 +601,14 @@ function preloadNextChunk(index) {
     const bufferCopy = buffer.slice(0);
     
     // Cache the audio buffer
-    playerState.audioCache[index] = bufferCopy;
+    cacheAudioBuffer(index, bufferCopy);
     
     console.log(`Successfully preloaded chunk ${index + 1}`);
-    playerState.preloadingChunk = -1;
-  })
-  .catch(error => {
+  } catch (error) {
     console.error(`Error preloading chunk ${index + 1}:`, error);
+  } finally {
     playerState.preloadingChunk = -1;
-  });
+  }
 }
 
 // Stop playback
@@ -539,8 +627,8 @@ function stopPlayback() {
   
   playerState.isPlaying = false;
   
-  // Clear audio cache to free memory
-  playerState.audioCache = {};
+  // Don't clear the entire cache, just stop playback
+  // We'll let the LRU mechanism manage the cache
   
   // Stop the keep alive interval
   stopKeepAlive();

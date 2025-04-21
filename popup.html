@@ -90,7 +90,7 @@
       border-left: 4px solid #ccc;
     }
     textarea {
-      width: 100%;
+      width: 90%;
       resize: vertical;
       min-height: 80px;
       font-family: inherit;
@@ -205,6 +205,9 @@
     .player-status.stopped {
       border-left: 4px solid #ea4335;
     }
+    .player-status.idle {
+      border-left: 4px solid #555;
+    }
     .player-status.processing {
       border-left: 4px solid #4285f4;
     }
@@ -226,6 +229,11 @@
       background-color: #fde9e8;
       color: #c5221f;
     }
+    .status-badge.idle {
+      color: #555;
+      background: #f0f0f0;
+    }
+
     .status-badge.processing {
       background-color: #e8f0fe;
       color: #1a73e8;
@@ -320,8 +328,8 @@
       </div>
       
       <div class="player-status" id="player-status">
-        <span class="status-text">No active playback</span>
-        <span class="status-badge stopped">Stopped</span>
+        <span class="status-text">Waiting for input...</span>
+        <span class="status-badge idle">Stopped</span>
       </div>
       
       <div class="progress-container">
